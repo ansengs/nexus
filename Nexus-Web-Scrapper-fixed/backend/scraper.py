@@ -10,15 +10,34 @@ from crawler import SiteCrawler
 from query_engine import QueryEngine
 
 
+class ScraperBlockedError(RuntimeError):
+    """Raised when a site actively blocks the scraper (HTTP 403/429)."""
+    pass
+
+
 class WebScraper:
     DEFAULT_HEADERS = {
         'User-Agent': (
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
             'AppleWebKit/537.36 (KHTML, like Gecko) '
-            'Chrome/120.0.0.0 Safari/537.36'
+            'Chrome/124.0.0.0 Safari/537.36'
+        ),
+        'Accept': (
+            'text/html,application/xhtml+xml,application/xml;q=0.9,'
+            'image/avif,image/webp,image/apng,*/*;q=0.8,'
+            'application/signed-exchange;v=b3;q=0.7'
         ),
         'Accept-Language': 'en-US,en;q=0.9',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Cache-Control': 'max-age=0',
+        'Sec-Ch-Ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+        'Sec-Ch-Ua-Mobile': '?0',
+        'Sec-Ch-Ua-Platform': '"macOS"',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none',
+        'Sec-Fetch-User': '?1',
+        'Upgrade-Insecure-Requests': '1',
     }
 
     def __init__(self, timeout: int = 12):
@@ -31,60 +50,98 @@ class WebScraper:
     # ─────────────────────────── URL Resolution ────────────────────────────
 
     def resolve_url(self, target: str) -> Optional[str]:
-        """Convert company name or partial URL to a reachable full URL."""
+        """Convert company name or partial URL to a reachable full URL.
+        Returns the canonical URL even if the site is blocking scrapers,
+        so fetch() can raise ScraperBlockedError with the right message.
+        Returns None only when the domain cannot be reached at all.
+        """
         if not target:
             return None
 
-        # Already a full URL — trust it, just normalize it
+        # Already a full URL — probe it to get canonical form and verify it's reachable
         if re.match(r'https?://', target):
-            return self._normalize_url(target)
+            normalized = self._normalize_url(target)
+            canonical, status = self._probe_url(normalized)
+            if status == 'unreachable':
+                return None      # domain doesn't exist at all
+            return canonical or normalized  # ok or blocked — let fetch() handle it
 
-        # Looks like a bare domain (contains dot, no spaces)
+        # Bare domain — try no-www first (many sites block or redirect www→apex)
         if '.' in target and ' ' not in target:
-            for prefix in ['https://www.', 'https://']:
-                url = prefix + target.lstrip('/')
-                if self._domain_exists(url):
-                    return url
+            result = self._best_url([
+                'https://' + target.lstrip('/'),
+                'https://www.' + target.lstrip('/'),
+            ])
+            if result:
+                return result
 
-        # Company name → try common TLD patterns
+        # Company name → try common TLD patterns, no-www before www
         slug = re.sub(r'[^a-z0-9]', '', target.lower().replace(' ', ''))
-        candidates = [
-            f'https://www.{slug}.com',
+        result = self._best_url([
             f'https://{slug}.com',
+            f'https://www.{slug}.com',
+            f'https://{slug}.org',
             f'https://www.{slug}.org',
+            f'https://{slug}.io',
             f'https://www.{slug}.io',
-            f'https://www.{slug}.net',
-        ]
-        for url in candidates:
-            if self._domain_exists(url):
-                return url
+            f'https://{slug}.net',
+        ])
+        if result:
+            return result
 
         # Fallback: DuckDuckGo HTML search
         return self._search_ddg(target)
 
     def _normalize_url(self, url: str) -> str:
-        """Return the URL as-is if it looks valid; strip fragments."""
+        """Strip URL fragment, return clean URL."""
         from urllib.parse import urldefrag
         url, _ = urldefrag(url)
-        return url
+        return url.rstrip('/')
 
-    def _domain_exists(self, url: str) -> bool:
+    def _best_url(self, candidates: list) -> Optional[str]:
         """
-        Check if a domain is reachable. Accepts any HTTP response including
-        403/503 (bot-blocking sites are still real). Only returns False if
-        the connection itself fails (DNS error, timeout, etc.).
+        Probe each candidate URL. Returns the first 2xx URL (canonical after redirects).
+        If none succeed, returns the first URL that at least got a response (blocked-but-real).
+        Returns None only if every candidate fails to connect entirely.
+        """
+        first_blocked = None
+        for url in candidates:
+            canonical, status = self._probe_url(url)
+            if status == 'ok':
+                return canonical
+            if status == 'blocked' and first_blocked is None:
+                first_blocked = canonical  # domain exists, just blocking us
+        return first_blocked  # None if every probe was unreachable
+
+    def _probe_url(self, url: str) -> Tuple[Optional[str], str]:
+        """
+        Probe a URL. Returns (canonical_url, status) where status is:
+          'ok'          — 2xx response, safe to scrape
+          'blocked'     — 4xx/5xx response, domain is real but access is denied
+          'unreachable' — connection error or timeout, domain may not exist
+        canonical_url is the final URL after redirects, or None if unreachable.
         """
         try:
             r = self.session.get(url, timeout=6, allow_redirects=True)
-            # Any HTTP response means the domain exists
-            return True
-        except requests.exceptions.ConnectionError:
-            return False
-        except requests.exceptions.Timeout:
-            # Might still be valid — treat as exists to avoid false negatives
-            return True
+            from urllib.parse import urldefrag
+            canonical, _ = urldefrag(r.url)
+            canonical = canonical.rstrip('/')
+            if r.status_code < 400:
+                return canonical, 'ok'
+            return canonical, 'blocked'
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+            return None, 'unreachable'
         except Exception:
-            return False
+            return None, 'unreachable'
+
+    def _canonical_url(self, url: str) -> Optional[str]:
+        """Legacy helper — returns canonical URL only on 2xx, else None."""
+        canonical, status = self._probe_url(url)
+        return canonical if status == 'ok' else None
+
+    def _domain_exists(self, url: str) -> bool:
+        """Legacy wrapper — kept for any external callers."""
+        return self._canonical_url(url) is not None
 
     def _search_ddg(self, query: str) -> Optional[str]:
         try:
@@ -110,9 +167,22 @@ class WebScraper:
     # ──────────────────────────── Page Fetching ────────────────────────────
 
     def fetch(self, url: str) -> Tuple[BeautifulSoup, str]:
-        """Returns (soup, final_url)"""
-        r = self.session.get(url, timeout=self.timeout, allow_redirects=True)
-        r.raise_for_status()
+        """Returns (soup, final_url). Raises ScraperBlockedError on 403/429,
+        RuntimeError on other failures."""
+        try:
+            r = self.session.get(url, timeout=self.timeout, allow_redirects=True)
+        except requests.exceptions.ConnectionError:
+            raise RuntimeError(f"Could not connect to {url} — check that the site is reachable.")
+        except requests.exceptions.Timeout:
+            raise RuntimeError(f"Request to {url} timed out after {self.timeout}s.")
+        except requests.exceptions.RequestException as exc:
+            raise RuntimeError(f"Network error fetching {url}: {exc}")
+
+        if r.status_code in (403, 429):
+            raise ScraperBlockedError(url)
+        if r.status_code >= 400:
+            raise RuntimeError(f"{url} returned HTTP {r.status_code}.")
+
         soup = BeautifulSoup(r.text, 'html.parser')
         return soup, r.url
 

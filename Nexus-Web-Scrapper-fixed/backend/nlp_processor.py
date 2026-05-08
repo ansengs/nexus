@@ -67,6 +67,9 @@ class NLPProcessor:
         'web', 'please', 'can', 'could', 'would', 'should', 'look', 'up',
         'search', 'scrape', 'fetch', 'retrieve', 'pull', 'info', 'data',
         'i', 'want', 'need', 'like', 'know', 'check',
+        # Intent/verb words that should never be mistaken for a target domain
+        'describe', 'list', 'explain', 'compare', 'latest', 'newest', 'best',
+        'top', 'recent', 'services', 'products', 'history', 'founded',
     }
 
     URL_REGEX = re.compile(
@@ -122,6 +125,14 @@ class NLPProcessor:
         best = max(scores, key=scores.get)
         return best if scores[best] > 0 else 'general'
 
+    # Words that look capitalized at sentence start but are never site targets
+    CAPS_STOP_WORDS = {
+        'Get', 'Find', 'Show', 'Tell', 'Give', 'Describe', 'What', 'Who',
+        'When', 'Where', 'How', 'Can', 'Could', 'Please', 'List', 'Look',
+        'Search', 'Fetch', 'Check', 'Latest', 'Newest', 'Best', 'Top',
+        'Contact', 'Services', 'History', 'About', 'Compare', 'Explain',
+    }
+
     def _extract_target(self, query: str, query_lower: str) -> Tuple[str, str]:
         match = self.URL_REGEX.search(query)
         if match:
@@ -130,8 +141,9 @@ class NLPProcessor:
             q_without = query[:match.start()] + query[match.end():]
             return target, q_without
 
-        # Fall back to capitalized proper-noun phrases
+        # Fall back to capitalized proper-noun phrases, skipping verb/intent words
         caps = re.findall(r'\b([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)\b', query)
+        caps = [c for c in caps if c not in self.CAPS_STOP_WORDS]
         if caps:
             target = caps[-1]
             q_without = query.replace(target, ' ', 1)

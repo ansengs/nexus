@@ -78,11 +78,14 @@ function BotMessage({ message, onPreviewPress }) {
   if (message.type === 'typing') return <TypingIndicator isInquiry={message.isInquiry} />;
 
   if (message.type === 'error') {
+    const icon  = message.isBlockaded ? 'shield-outline' : 'warning-outline';
+    const color = message.isBlockaded ? colors.accentTeal : colors.error;
+    const style = message.isBlockaded ? msgStyles.blockadeBubble : msgStyles.errorBubble;
     return (
-      <View style={[msgStyles.botBubble, msgStyles.errorBubble]}>
+      <View style={[msgStyles.botBubble, style]}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-          <Ionicons name="warning-outline" size={15} color={colors.error} />
-          <Text style={msgStyles.errorText}>{message.text}</Text>
+          <Ionicons name={icon} size={15} color={color} />
+          <Text style={[msgStyles.errorText, { color }]}>{message.text}</Text>
         </View>
       </View>
     );
@@ -275,9 +278,11 @@ export default function MainScreen() {
       setSessionId(data.session_id);
       setMessages(prev => prev.filter(m => m.id !== 'typing').concat(botMsg));
     } catch (err) {
-      const msg = err.response?.data?.detail || err.message || 'Request failed';
+      const isBlockaded = err.isBlockaded === true;
+      const msg = err.message || 'Request failed';
       const errMsg = {
         id: `err-${ts}`, role: 'bot', type: 'error',
+        isBlockaded,
         text: msg, timestamp: new Date().toISOString(),
       };
       setMessages(prev => prev.filter(m => m.id !== 'typing').concat(errMsg));
@@ -292,12 +297,12 @@ export default function MainScreen() {
   };
 
   const QUICK_PROMPTS = [
-    { text: 'Latest iPhone from apple.com',       icon: 'search-outline'         },
-    { text: 'Contact info for stripe.com',         icon: 'call-outline'           },
-    { text: 'Services offered by anthropic.com',  icon: 'briefcase-outline'      },
-    { text: 'History of tesla.com',               icon: 'time-outline'           },
-    { text: 'MacBook Pro price from apple.com',   icon: 'pricetag-outline'       },
-    { text: 'Describe what vercel.com does',      icon: 'document-text-outline'  },
+    { text: 'Latest releases on github.com',       icon: 'search-outline'         },
+    { text: 'Contact info for github.com',          icon: 'call-outline'           },
+    { text: 'Services offered by github.com',       icon: 'briefcase-outline'      },
+    { text: 'History of github.com',                icon: 'time-outline'           },
+    { text: 'Latest iPhone from apple.com',         icon: 'pricetag-outline'       },
+    { text: 'Describe what github.com does',        icon: 'document-text-outline'  },
   ];
 
   return (
@@ -399,13 +404,24 @@ export default function MainScreen() {
                   style={styles.input}
                   value={inputText}
                   onChangeText={setInputText}
-                  placeholder={`Ask anything... e.g. "latest iPhone from apple.com"`}
+                  placeholder={`Ask anything... e.g. "history of github.com"`}
                   placeholderTextColor={colors.textMuted}
                   multiline
                   maxLength={500}
-                  onSubmitEditing={Platform.OS === 'web' ? submit : undefined}
-                  blurOnSubmit={false}
+                  // Native: returnKeyType="send" + onSubmitEditing fires on the Send key.
+                  // blurOnSubmit must be true (or omitted) on native multiline for
+                  // onSubmitEditing to trigger — false suppresses it.
+                  onSubmitEditing={Platform.OS !== 'web' ? submit : undefined}
+                  blurOnSubmit={Platform.OS !== 'web'}
                   returnKeyType="send"
+                  // Web: textarea Enter inserts a newline and never fires onSubmitEditing.
+                  // Intercept Enter (without Shift for newline) via onKeyPress instead.
+                  onKeyPress={Platform.OS === 'web' ? (e) => {
+                    if (e.nativeEvent.key === 'Enter' && !e.nativeEvent.shiftKey) {
+                      e.preventDefault();
+                      submit();
+                    }
+                  } : undefined}
                 />
                 <TouchableOpacity
                   style={[styles.sendBtn, (!inputText.trim() || loading) && styles.sendBtnDisabled]}
@@ -419,7 +435,7 @@ export default function MainScreen() {
                 </TouchableOpacity>
               </View>
               <Text style={styles.inputFooter}>
-                Press ↵ to search · Backend at localhost:8000
+                Press ↵ to search · Shift+↵ for new line · Backend at localhost:8000
               </Text>
             </View>
           </KeyboardAvoidingView>
@@ -513,6 +529,12 @@ const msgStyles = StyleSheet.create({
   errorBubble: {
     borderColor: colors.error + '44',
     backgroundColor: 'rgba(255,64,129,0.06)',
+    margin: spacing.lg,
+    borderRadius: radius.md,
+  },
+  blockadeBubble: {
+    borderColor: colors.accentTeal + '44',
+    backgroundColor: 'rgba(0,245,212,0.05)',
     margin: spacing.lg,
     borderRadius: radius.md,
   },

@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, AnyHttpUrl
 
-from scraper import WebScraper
+from scraper import WebScraper, ScraperBlockedError
 from nlp_processor import NLPProcessor
 from database import ScraperDatabase
 
@@ -84,7 +84,7 @@ async def search(req: SearchRequest):
     intent, target, topic = nlp.process_query(req.query)
 
     # URL resolution (potentially slow – runs in thread pool to avoid blocking)
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     url = await loop.run_in_executor(None, scraper.resolve_url, target)
 
     if not url:
@@ -99,6 +99,8 @@ async def search(req: SearchRequest):
         results = await loop.run_in_executor(
             None, scraper.scrape, url, intent, topic
         )
+    except ScraperBlockedError:
+        raise HTTPException(403, f"SCRAPER_BLOCKED:{url}")
     except Exception as exc:
         raise HTTPException(502, f"Scraping error: {exc}")
 
@@ -147,6 +149,8 @@ async def delete_session(session_id: str):
 async def export_session(session_id: str):
     """Download session as JSON."""
     data = db.export_session_json(session_id)
+    if not data:
+        raise HTTPException(404, "Session not found")
     return JSONResponse(content=data, media_type="application/json")
 
 

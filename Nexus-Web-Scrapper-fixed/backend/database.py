@@ -38,7 +38,9 @@ class ScraperDatabase:
 
     def __init__(self, filepath: str):
         self.filepath = filepath
-        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        dirpath = os.path.dirname(filepath)
+        if dirpath:
+            os.makedirs(dirpath, exist_ok=True)
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.filepath)
@@ -154,9 +156,10 @@ class ScraperDatabase:
             results.append(row)
         return results
 
-    def export_session_json(self, session_id: str) -> str:
+    def export_session_json(self, session_id: str) -> dict:
+        """Return session as a plain dict so FastAPI's JSONResponse can serialize it."""
         sess = self.get_session(session_id)
-        return json.dumps(sess, indent=2) if sess else '{}'
+        return sess if sess else {}
 
     # ──────────────────────────── Utils ────────────────────────────────────
 
