@@ -6,11 +6,9 @@ Note: The execution container could not clone GitHub directly, so these are repr
 
 ## Included screenshots
 
-![01_home_desktop.png](images/01_home_desktop.png)
+![Home.png](images/Home.png)
 
-![02_search_results_preview.png](images/02_search_results_preview.png)
-
-![03_mobile_layout.png](images/03_mobile_layout.png)
+![Search.png](images/Search.png)
 
 ## Source basis
 
